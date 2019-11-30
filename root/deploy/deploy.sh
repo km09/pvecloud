@@ -11,18 +11,16 @@ config_mac="$(printf '52:54:00:%02X:%02X:%02X\n' $[RANDOM%256] $[RANDOM%256] $[R
 config_bridge="vmbr0"
 config_id="100"
 config_uuid="$(cat /proc/sys/kernel/random/uuid)"
-config_sshkey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFSBkWq9w1UOT4m90XtI0P1o/NUpj8VhQPSezUsIQSgx fusl@meo.ws"
+config_sshkey="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDGrN+WtSEwM4p4FXMd4jYJd3yE0BAsNMVH3HhgGinHsVf8vtcn+cUWnX/z/o+aCyFyTi/Otf6gcoXNNGkH4+f1gK6gUvelN+9ht1iu6FwX5ezBTnXcjLRIOWvcXfUJqJP++PMfzvIWLIixm9WEK9yO7G9AyNDGjb3rrUaM6dN27GBxm3MplKt9V0cHX2BYckVXZIyoskA35bbpacSxDFxFDDdTVOi74F/7N6XV8fmJm45KqOZsQzK1FLl9PG19o21e9tmNzw8BMmUzuEEC/rVT94UkGAxSwvEY61aECLhcH2lLhXpocX5eyRt7RT8qem4/2jptB8zFahL10YUx77of kurt@bastion"
 config_cores="$(numactl -H | grep -E '^node [0-9]+ cpus: ' | cut -d' ' -f4- | awk '{print NF}' | sort -nk1 | head -n 1 || echo -n 1)"
 config_sockets="$(numactl -H | grep -E '^node [0-9]+ cpus: ' | wc -l || echo -n 1)"
 config_node="${HOSTNAME}"
-config_pool="repl3"
-config_tpool="repl3"
+config_pool="ssd"
+config_tpool="ssd"
 config_vtag=""
 config_ip="auto"
 config_gw=""
 config_legacydisk="y"
-config_ip6="auto"
-config_gw6=""
 config_asn=""
 config_cpulimit=""
 config_balloon=""
@@ -32,9 +30,6 @@ config_id=100
 while test -f "/etc/pve/nodes/"*"/qemu-server/${config_id}.conf"; do
 	config_id="$((${config_id}+1))"
 done
-#while test -f "/etc/pve/nodes/"*"/qemu-server/${config_id}.conf" || rbd info "${config_pool}/vm-${config_id}-cloudinit" 1>/dev/null 2>/dev/null; do
-#	config_id="$((${config_id}+1))"
-#done
 
 function urlencode() {
 	old_lc_collate="${LC_COLLATE}"
@@ -73,9 +68,6 @@ local ex_tpool=$(     printf "%50s" "[${config_tpool}]")
 local ex_vtag=$(      printf "%50s" "[${config_vtag}]")
 local ex_ip=$(        printf "%50s" "[${config_ip}]")
 local ex_gw=$(        printf "%50s" "[${config_gw}]")
-local ex_ip6=$(       printf "%50s" "[${config_ip6}]")
-local ex_gw6=$(       printf "%50s" "[${config_gw6}]")
-local ex_legacydisk=$(printf "%50s" "[${config_legacydisk}]")
 local ex_asn=$(       printf "%50s" "[${config_asn}]")
 local ex_cpulimit=$(  printf "%50s" "[${config_cpulimit}]")
 local ex_tail=$(      printf "%50s" "[${config_tail}]")
@@ -123,15 +115,6 @@ Usage: "${0}" [OPTIONS]
       --gw          VM IPv4 Gateway (example: 192.0.2.1)
                     Automatically assigned when using "auto"
                     ${ex_gw}
-      --ip6         VM IPv6/subnet (example: fd1a:aee8::2/64)
-                    "auto" to pick from config/ip6.txt
-                    ${ex_ip6}
-      --gw6         VM IPv6 Gateway (example: fe80::1)
-                    Automatically assigned when using "auto"
-                    ${ex_gw6}
-      --legacydisk  Use legacy disk format (vm-100-disk-0) instead of
-                    cloud disk UUID format (vm-0-<disk uuid>)
-                    ${ex_legacydisk}
   -a, --as, --asn   Allow BGP sessions from this VM with this AS
                     ${ex_asn}
       --cpulimit    CPU limit (1 = 1 core, up to 128)
@@ -257,24 +240,6 @@ function parseoptions() {
 				[ "x${value}" == "x" ] && [ "x${2:0:1}" != "x-" ] && value="${2}" && shift
 				config_gw="${value}"
 			;;
-			--ip6|--ip6=*)
-				value=$(parseoption "${1}")
-				[ "x${value}" == "x${1}" ] && value=""
-				[ "x${value}" == "x" ] && [ "x${2:0:1}" != "x-" ] && value="${2}" && shift
-				config_ip6="${value}"
-			;;
-			--gw6|--gw6=*)
-				value=$(parseoption "${1}")
-				[ "x${value}" == "x${1}" ] && value=""
-				[ "x${value}" == "x" ] && [ "x${2:0:1}" != "x-" ] && value="${2}" && shift
-				config_gw6="${value}"
-			;;
-			--legacydisk|--legacydisk=*)
-				value=$(parseoption "${1}")
-				[ "x${value}" == "x${1}" ] && value=""
-				[ "x${value}" == "x" ] && [ "x${2:0:1}" != "x-" ] && value="${2}" && shift
-				config_legacydisk="${value}"
-			;;
 			-a*|--as|--as=*|--asn|--asn=*)
 				value=$(parseoption "${1}")
 				[ "x${value}" == "x${1}" ] && value=""
@@ -343,15 +308,17 @@ test -z "${config_balloon}" || is_int "${config_balloon}" || { echo "balloon=${c
 
 config_sshkey=$(urlencode "${config_sshkey}")
 
-if test "${config_legacydisk}" == "n"; then
-	rootdiskvmid="0"
-	rootdiskuuid=$(cat /proc/sys/kernel/random/uuid)
-else
-	rootdiskvmid="${config_id}"
-	rootdiskuuid="disk-0"
-fi
+#if test "${config_legacydisk}" == "n"; then
+#	rootdiskvmid="0"
+#	rootdiskuuid=$(cat /proc/sys/kernel/random/uuid)
+#else
+#	rootdiskvmid="${config_id}"
+#	rootdiskuuid="disk-0"
+#fi
+rootdiskvmid="${config_id}"
+rootdiskuuid="disk-0"
 
-if test "${config_ip}" == "auto" || test "${config_ip6}" == "auto"; then
+if test "${config_ip}" == "auto"; then
 	used_ips=$(grep -E '^ipconfig[0-9]+: ' /etc/pve/nodes/*/qemu-server/*.conf | grep -oE 'ip6?=[^,$]+' | cut -d= -f2)
 fi
 
@@ -373,26 +340,6 @@ if test "${config_ip}" == "auto"; then
 	echo "Found free IPv4 address: ${avail_ip4}"
 	config_ip="${avail_ip4%% *}"
 	config_gw="${avail_ip4##* }"
-fi
-
-if test "${config_ip6}" == "auto"; then
-	all_ip6=$(cat config/ip6.txt)
-	avail_ip6=$(
-		echo "${all_ip6}" | shuf | while read cand_ip6 cand_gw6 _; do
-			cand_ip6_addr=$(echo "${cand_ip6}" | cut -d/ -f1)
-			if ! echo "${used_ips}" | grep -Fxq "${cand_ip6_addr}"; then
-				echo "${cand_ip6} ${cand_gw6}"
-				break
-			fi
-		done
-	)
-	if test -z "${avail_ip6}"; then
-		echo "No free IPv6 address available in pool; Use --ip and --gw to force use of an already in-use IPv6 address"
-		exit 16
-	fi
-	echo "Found free IPv6 address: ${avail_ip6}"
-	config_ip6="${avail_ip6%% *}"
-	config_gw6="${avail_ip6##* }"
 fi
 
 config=$(DISKSIZE="${config_disksize}" MEMORY="${config_memory}" NAME="${config_name}" MAC="${config_mac}" BRIDGE="${config_bridge}" ID="${config_id}" UUID="${config_uuid}" SSHKEY="${config_sshkey}" CORES="${config_cores}" SOCKETS="${config_sockets}" POOL="${config_pool}" VTAG="${config_vtag}" IP="${config_ip}" GW="${config_gw}" IP6="${config_ip6}" GW6="${config_gw6}" ROOTDISKVMID="${rootdiskvmid}" ROOTDISKUUID="${rootdiskuuid}" ASN="${config_asn}" CPULIMIT="${config_cpulimit}" BALLOON="${config_balloon}" bin/mo "configs/${config_template}.conf" | grep -vE '^$' | sort -u)
@@ -434,14 +381,6 @@ if test "${config_disksize}" != "0"; then
 	}
 fi
 
-#rbd create -s 5M "${config_pool}/vm-${config_id}-cloudinit" || {
-#	echo "Failed to create cloud-init drive ${config_pool}/vm-${config_id}-cloudinit"
-#	rbd rm "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}"
-#	rbd rm "${config_pool}/vm-${config_id}-cloudinit"
-#	rm "/etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf"
-#	exit 128
-#}
-
 ssh "root@${config_node}" rm -f "/var/lib/vz/images/${config_id}/vm-${config_id}-cloudinit.qcow2"
 
 ssh "root@${config_node}" qm start "${config_id}" || {
@@ -454,8 +393,8 @@ ssh "root@${config_node}" qm start "${config_id}" || {
 
 echo "VM deployed successfully"
 
-if test "${config_tail}" == "n"; then
-	echo ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
-else
-	ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
-fi
+#if test "${config_tail}" == "n"; then
+#	echo ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
+#else
+#	ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
+#fi
