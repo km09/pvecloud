@@ -293,7 +293,6 @@ fi
 
 test -r "configs/${config_template}.conf" || { echo "Template file configs/${config_template}.conf not found"; printhelp; exit 2; }
 test -f "/etc/pve/nodes/"*"/qemu-server/${config_id}.conf" && { echo "Configuration file for ID ${config_id} exists already"; printhelp; exit 3; }
-rbd info "${config_tpool}/template-${config_template}" 1>/dev/null 2>/dev/null || { echo "Template image ${config_tpool}/template-${config_template} not found"; printhelp; exit 4; }
 is_int "${config_memory}" || { echo "memory=${config_memory} is not numeric"; printhelp; exit 5; }
 is_int "${config_disksize}" || { echo "disk=${config_disksize} is not numeric"; printhelp; exit 6; }
 is_int "${config_id}" || { echo "id=${config_id} is not numeric"; printhelp; exit 7; }
@@ -347,54 +346,26 @@ config=$(DISKSIZE="${config_disksize}" MEMORY="${config_memory}" NAME="${config_
 #echo "${config}"
 #exit 0
 
-echo "Creating VM with id ${config_id} disk uuid ${rootdiskuuid} ip4 ${config_ip%%/*} (${config_ip} ${config_gw}) ip6 ${config_ip6%%/*} (${config_ip6} ${config_gw6})"
+echo "Creating VM with id ${config_id} disk uuid ${rootdiskuuid} ip4 ${config_ip%%/*} (${config_ip} ${config_gw})"
 
 echo "${config}" > "/etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf" || {
 	echo "Failed to write PVE config /etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf"
 	exit 128
 }
 
-snapshot_name=$(rbd snap ls "${config_tpool}/template-${config_template}" --format json | jq -Mcr 'if length > 0 then sort_by (.id) | reverse | .[0].name else empty end')
-
-if test "${snapshot_name}" == ""; then
-	rbd cp "${config_tpool}/template-${config_template}" "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}" || {
-		echo "Failed to copy template image (${config_tpool}/template-${config_template} -> ${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid})"
-		rbd rm "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}"
-		rm "/etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf"
-		exit 128
-	}
-else
-	rbd clone "${config_tpool}/template-${config_template}@${snapshot_name}" "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}" || {
-		echo "Failed to clone template image (${config_tpool}/template-${config_template} -> ${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid})"
-		rbd rm "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}"
-		rm "/etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf"
-		exit 128
-	}
-fi
-
-if test "${config_disksize}" != "0"; then
-	rbd resize -s "${config_disksize}G" "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}" || {
-		echo "Failed to resize disk ${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}"
-		rbd rm "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}"
-		rm "/etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf"
-		exit 128
-	}
-fi
-
-ssh "root@${config_node}" rm -f "/var/lib/vz/images/${config_id}/vm-${config_id}-cloudinit.qcow2"
+qm importdisk ${config_id} /ssd/images/template/iso/debian-buster-cloudinit.qcow2 ssd
+qm set ${config_id} --ide2 ssd:cloudinit
+qm resize ${config_id} scsi0 +$((config_disksize-2))G
 
 ssh "root@${config_node}" qm start "${config_id}" || {
 	echo "Failed to start VM ${config_id}"
-	rbd rm "${config_pool}/vm-${rootdiskvmid}-${rootdiskuuid}"
-	#rbd rm "${config_pool}/vm-${config_id}-cloudinit"
-	rm "/etc/pve/nodes/${config_node}/qemu-server/${config_id}.conf"
 	exit 128
 }
 
 echo "VM deployed successfully"
 
-#if test "${config_tail}" == "n"; then
-#	echo ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
-#else
-#	ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
-#fi
+if test "${config_tail}" == "n"; then
+	echo ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
+else
+	ssh "root@${config_node}" socat "UNIX-CONNECT:/var/run/qemu-server/${config_id}.serial0" STDIO
+fi
